@@ -1,12 +1,13 @@
 "use client"
 
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import Link from 'next/link'
 import Image from 'next/image'
 import { ArrowLeft, Plus, Edit, Trash2, Eye, Save, X } from 'lucide-react'
-import { Button } from '@/components/ui/button'
-import { Input } from '@/components/ui/input'
+import { db } from '@/lib/firebase'
+import { collection, addDoc, getDocs, updateDoc, doc, deleteDoc, query, orderBy } from 'firebase/firestore'
 
+// ინტერფეისი მონაცემთა სტრუქტურისთვის
 interface BlogPost {
   id: string
   slug: string
@@ -22,43 +23,42 @@ interface BlogPost {
   published: boolean
 }
 
-// Sample data - in production this would come from a database
-const initialPosts: BlogPost[] = [
-  {
-    id: '1',
-    slug: 'oxford-summer-program-2026',
-    image: 'https://hebbkx1anhila5yf.public.blob.vercel-storage.com/att.k8QthJ1OeUQTlrDmE8kfWRlwZV5te9UG3lXm_-Kmb04-khrV8QqfBqeAISkad8xSugNYL2KKlI.jpeg',
-    titleEn: 'Oxford Summer Program 2026: Applications Now Open',
-    titleGe: 'ოქსფორდის ზაფხულის პროგრამა 2026: რეგისტრაცია დაიწყო',
-    excerptEn: 'Join us for an unforgettable summer experience.',
-    excerptGe: 'შემოუერთდით ჩვენს დაუვიწყარ ზაფხულის გამოცდილებას.',
-    contentEn: 'Full article content here...',
-    contentGe: 'სრული სტატიის ტექსტი აქ...',
-    category: 'Programs',
-    date: '2026-03-15',
-    published: true
-  }
-]
-
 export default function AdminPage() {
-  const [posts, setPosts] = useState<BlogPost[]>(initialPosts)
+  const [posts, setPosts] = useState<BlogPost[]>([])
   const [isEditing, setIsEditing] = useState<string | null>(null)
   const [isCreating, setIsCreating] = useState(false)
+  const [loading, setLoading] = useState(true)
   const [editForm, setEditForm] = useState<Partial<BlogPost>>({})
 
   const categories = ['News', 'Programs', 'Education', 'Media', 'Events']
 
+  // 1. მონაცემების წამოღება Firebase-დან
+  useEffect(() => {
+    const fetchPosts = async () => {
+      try {
+        const q = query(collection(db, "posts"), orderBy("date", "desc"));
+        const querySnapshot = await getDocs(q);
+        const postsData = querySnapshot.docs.map(doc => ({
+          id: doc.id,
+          ...doc.data()
+        })) as BlogPost[];
+        setPosts(postsData);
+      } catch (error) {
+        console.error("Error fetching posts:", error);
+      } finally {
+        setLoading(false);
+      }
+    };
+    fetchPosts();
+  }, []);
+
   const handleCreate = () => {
     setIsCreating(true)
     setEditForm({
-      titleEn: '',
-      titleGe: '',
-      excerptEn: '',
-      excerptGe: '',
-      contentEn: '',
-      contentGe: '',
-      category: 'News',
-      image: '',
+      titleEn: '', titleGe: '',
+      excerptEn: '', excerptGe: '',
+      contentEn: '', contentGe: '',
+      category: 'News', image: '',
       published: false
     })
   }
@@ -68,34 +68,48 @@ export default function AdminPage() {
     setEditForm(post)
   }
 
-  const handleSave = () => {
-    if (isCreating) {
-      const newPost: BlogPost = {
-        id: Date.now().toString(),
-        slug: editForm.titleEn?.toLowerCase().replace(/\s+/g, '-') || '',
-        image: editForm.image || '',
-        titleEn: editForm.titleEn || '',
-        titleGe: editForm.titleGe || '',
-        excerptEn: editForm.excerptEn || '',
-        excerptGe: editForm.excerptGe || '',
-        contentEn: editForm.contentEn || '',
-        contentGe: editForm.contentGe || '',
-        category: editForm.category || 'News',
-        date: new Date().toISOString().split('T')[0],
-        published: editForm.published || false
+  // 2. შენახვისა და განახლების ლოგიკა
+  const handleSave = async () => {
+    const postData = {
+      slug: editForm.titleEn?.toLowerCase().replace(/\s+/g, '-') || 'post',
+      image: editForm.image || '',
+      titleEn: editForm.titleEn || '',
+      titleGe: editForm.titleGe || '',
+      excerptEn: editForm.excerptEn || '',
+      excerptGe: editForm.excerptGe || '',
+      contentEn: editForm.contentEn || '',
+      contentGe: editForm.contentGe || '',
+      category: editForm.category || 'News',
+      date: editForm.date || new Date().toISOString().split('T')[0],
+      published: editForm.published || false
+    };
+
+    try {
+      if (isCreating) {
+        const docRef = await addDoc(collection(db, "posts"), postData);
+        setPosts([{ id: docRef.id, ...postData } as BlogPost, ...posts]);
+        alert("სტატია წარმატებით გამოქვეყნდა!");
+      } else if (isEditing) {
+        const postRef = doc(db, "posts", isEditing);
+        await updateDoc(postRef, postData);
+        setPosts(posts.map(p => p.id === isEditing ? { id: isEditing, ...postData } as BlogPost : p));
+        alert("ცვლილებები შენახულია!");
       }
-      setPosts([newPost, ...posts])
-      setIsCreating(false)
-    } else if (isEditing) {
-      setPosts(posts.map(p => p.id === isEditing ? { ...p, ...editForm } as BlogPost : p))
-      setIsEditing(null)
+      handleCancel();
+    } catch (error) {
+      alert("შეცდომა შენახვისას: " + error);
     }
-    setEditForm({})
   }
 
-  const handleDelete = (id: string) => {
-    if (confirm('Are you sure you want to delete this post?')) {
-      setPosts(posts.filter(p => p.id !== id))
+  // 3. წაშლის ლოგიკა
+  const handleDelete = async (id: string) => {
+    if (confirm('ნამდვილად გსურთ ამ სტატიის წაშლა?')) {
+      try {
+        await deleteDoc(doc(db, "posts", id));
+        setPosts(posts.filter(p => p.id !== id));
+      } catch (error) {
+        alert("შეცდომა წაშლისას!");
+      }
     }
   }
 
@@ -105,205 +119,92 @@ export default function AdminPage() {
     setEditForm({})
   }
 
+  if (loading) return <div className="p-10 text-center">იტვირთება მონაცემები...</div>
+
   return (
-    <div className="min-h-screen bg-muted/30">
+    <div className="min-h-screen bg-gray-50 font-sans">
       {/* Header */}
-      <div className="bg-primary text-primary-foreground py-8">
-        <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
-          <Link href="/" className="inline-flex items-center text-primary-foreground/80 hover:text-primary-foreground mb-4">
-            <ArrowLeft className="w-4 h-4 mr-2" />
-            Back to Website
-          </Link>
-          <div className="flex items-center justify-between">
-            <div>
-              <h1 className="text-3xl font-bold">Admin Panel</h1>
-              <p className="text-primary-foreground/80">Manage blog posts and content</p>
-            </div>
-            <Button 
-              onClick={handleCreate}
-              className="bg-secondary hover:bg-secondary/90 text-secondary-foreground"
-            >
-              <Plus className="w-4 h-4 mr-2" />
-              New Post
-            </Button>
+      <div className="bg-[#002147] text-white py-8">
+        <div className="mx-auto max-w-7xl px-4 flex flex-col md:flex-row justify-between items-center gap-4">
+          <div>
+            <h1 className="text-3xl font-bold">GEN ადმინ პანელი</h1>
+            <p className="opacity-80">მართეთ საიტის კონტენტი და სიახლეები</p>
           </div>
+          <button onClick={handleCreate} className="bg-[#d4af37] hover:bg-[#b8962e] text-white px-6 py-3 rounded-lg flex items-center gap-2 transition-all">
+            <Plus className="w-5 h-5" /> ახალი პოსტი
+          </button>
         </div>
       </div>
 
-      <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 py-8">
-        {/* Create/Edit Form */}
+      <div className="mx-auto max-w-7xl px-4 py-8">
+        {/* Form Section */}
         {(isCreating || isEditing) && (
-          <div className="bg-card rounded-xl border border-border p-6 mb-8">
-            <div className="flex items-center justify-between mb-6">
-              <h2 className="text-xl font-semibold">
-                {isCreating ? 'Create New Post' : 'Edit Post'}
-              </h2>
-              <Button variant="ghost" size="icon" onClick={handleCancel}>
-                <X className="w-5 h-5" />
-              </Button>
+          <div className="bg-white rounded-xl shadow-lg p-6 mb-8 border-t-4 border-[#d4af37]">
+            <div className="flex justify-between items-center mb-6">
+              <h2 className="text-xl font-bold text-[#002147]">{isCreating ? 'ახალი სტატიის დამატება' : 'რედაქტირება'}</h2>
+              <button onClick={handleCancel} className="text-gray-400 hover:text-red-500"><X /></button>
             </div>
 
-            <div className="grid md:grid-cols-2 gap-6">
+            <div className="grid md:grid-cols-2 gap-8">
+              {/* English Content */}
               <div className="space-y-4">
-                <div>
-                  <label className="block text-sm font-medium mb-1">Title (English)</label>
-                  <Input
-                    value={editForm.titleEn || ''}
-                    onChange={e => setEditForm({ ...editForm, titleEn: e.target.value })}
-                    placeholder="Enter title in English"
-                  />
-                </div>
-                <div>
-                  <label className="block text-sm font-medium mb-1">Excerpt (English)</label>
-                  <textarea
-                    value={editForm.excerptEn || ''}
-                    onChange={e => setEditForm({ ...editForm, excerptEn: e.target.value })}
-                    placeholder="Brief description in English"
-                    className="w-full px-3 py-2 border rounded-lg resize-none h-24"
-                  />
-                </div>
-                <div>
-                  <label className="block text-sm font-medium mb-1">Content (English)</label>
-                  <textarea
-                    value={editForm.contentEn || ''}
-                    onChange={e => setEditForm({ ...editForm, contentEn: e.target.value })}
-                    placeholder="Full article content in English"
-                    className="w-full px-3 py-2 border rounded-lg resize-none h-40"
-                  />
-                </div>
+                <h3 className="font-semibold text-blue-800 border-b pb-2">English Version</h3>
+                <input className="w-full p-3 border rounded-lg" placeholder="Title (EN)" value={editForm.titleEn} onChange={e => setEditForm({...editForm, titleEn: e.target.value})} />
+                <textarea className="w-full p-3 border rounded-lg h-24" placeholder="Short Excerpt (EN)" value={editForm.excerptEn} onChange={e => setEditForm({...editForm, excerptEn: e.target.value})} />
+                <textarea className="w-full p-3 border rounded-lg h-40" placeholder="Full Content (EN)" value={editForm.contentEn} onChange={e => setEditForm({...editForm, contentEn: e.target.value})} />
               </div>
 
+              {/* Georgian Content */}
               <div className="space-y-4">
-                <div>
-                  <label className="block text-sm font-medium mb-1">Title (Georgian)</label>
-                  <Input
-                    value={editForm.titleGe || ''}
-                    onChange={e => setEditForm({ ...editForm, titleGe: e.target.value })}
-                    placeholder="შეიყვანეთ სათაური ქართულად"
-                  />
-                </div>
-                <div>
-                  <label className="block text-sm font-medium mb-1">Excerpt (Georgian)</label>
-                  <textarea
-                    value={editForm.excerptGe || ''}
-                    onChange={e => setEditForm({ ...editForm, excerptGe: e.target.value })}
-                    placeholder="მოკლე აღწერა ქართულად"
-                    className="w-full px-3 py-2 border rounded-lg resize-none h-24"
-                  />
-                </div>
-                <div>
-                  <label className="block text-sm font-medium mb-1">Content (Georgian)</label>
-                  <textarea
-                    value={editForm.contentGe || ''}
-                    onChange={e => setEditForm({ ...editForm, contentGe: e.target.value })}
-                    placeholder="სრული სტატიის ტექსტი ქართულად"
-                    className="w-full px-3 py-2 border rounded-lg resize-none h-40"
-                  />
-                </div>
+                <h3 className="font-semibold text-blue-800 border-b pb-2">ქართული ვერსია</h3>
+                <input className="w-full p-3 border rounded-lg" placeholder="სათაური (GE)" value={editForm.titleGe} onChange={e => setEditForm({...editForm, titleGe: e.target.value})} />
+                <textarea className="w-full p-3 border rounded-lg h-24" placeholder="მოკლე აღწერა (GE)" value={editForm.excerptGe} onChange={e => setEditForm({...editForm, excerptGe: e.target.value})} />
+                <textarea className="w-full p-3 border rounded-lg h-40" placeholder="სრული ტექსტი (GE)" value={editForm.contentGe} onChange={e => setEditForm({...editForm, contentGe: e.target.value})} />
               </div>
+            </div>
 
-              <div>
-                <label className="block text-sm font-medium mb-1">Image URL</label>
-                <Input
-                  value={editForm.image || ''}
-                  onChange={e => setEditForm({ ...editForm, image: e.target.value })}
-                  placeholder="https://example.com/image.jpg"
-                />
-              </div>
-
-              <div className="flex gap-4">
-                <div className="flex-1">
-                  <label className="block text-sm font-medium mb-1">Category</label>
-                  <select
-                    value={editForm.category || 'News'}
-                    onChange={e => setEditForm({ ...editForm, category: e.target.value })}
-                    className="w-full px-3 py-2 border rounded-lg"
-                  >
-                    {categories.map(cat => (
-                      <option key={cat} value={cat}>{cat}</option>
-                    ))}
+            <div className="mt-6 grid md:grid-cols-3 gap-4 items-end">
+               <div>
+                  <label className="text-sm block mb-1">სურათის ლინკი (URL)</label>
+                  <input className="w-full p-3 border rounded-lg" placeholder="https://..." value={editForm.image} onChange={e => setEditForm({...editForm, image: e.target.value})} />
+               </div>
+               <div>
+                  <label className="text-sm block mb-1">კატეგორია</label>
+                  <select className="w-full p-3 border rounded-lg" value={editForm.category} onChange={e => setEditForm({...editForm, category: e.target.value})}>
+                    {categories.map(c => <option key={c} value={c}>{c}</option>)}
                   </select>
-                </div>
-                <div className="flex items-end">
-                  <label className="flex items-center gap-2 cursor-pointer">
-                    <input
-                      type="checkbox"
-                      checked={editForm.published || false}
-                      onChange={e => setEditForm({ ...editForm, published: e.target.checked })}
-                      className="w-5 h-5 rounded"
-                    />
-                    <span className="text-sm font-medium">Published</span>
-                  </label>
-                </div>
-              </div>
-            </div>
-
-            <div className="flex justify-end gap-3 mt-6 pt-6 border-t">
-              <Button variant="outline" onClick={handleCancel}>
-                Cancel
-              </Button>
-              <Button onClick={handleSave} className="bg-primary">
-                <Save className="w-4 h-4 mr-2" />
-                Save Post
-              </Button>
+               </div>
+               <div className="flex justify-end gap-3">
+                  <button onClick={handleCancel} className="px-6 py-3 border rounded-lg hover:bg-gray-100">გაუქმება</button>
+                  <button onClick={handleSave} className="px-6 py-3 bg-[#002147] text-white rounded-lg flex items-center gap-2 hover:bg-blue-900">
+                    <Save className="w-4 h-4" /> შენახვა
+                  </button>
+               </div>
             </div>
           </div>
         )}
 
-        {/* Posts List */}
-        <div className="bg-card rounded-xl border border-border overflow-hidden">
-          <div className="p-4 border-b border-border">
-            <h2 className="font-semibold">All Posts ({posts.length})</h2>
-          </div>
-          <div className="divide-y divide-border">
+        {/* List Section */}
+        <div className="bg-white rounded-xl shadow-md overflow-hidden">
+          <div className="bg-gray-100 p-4 font-bold text-[#002147]">არსებული პოსტები ({posts.length})</div>
+          <div className="divide-y">
             {posts.map(post => (
-              <div key={post.id} className="flex items-center gap-4 p-4 hover:bg-muted/50 transition-colors">
-                <div className="relative w-20 h-14 rounded-lg overflow-hidden flex-shrink-0">
-                  <Image
-                    src={post.image}
-                    alt={post.titleEn}
-                    fill
-                    className="object-cover"
-                  />
-                </div>
-                <div className="flex-1 min-w-0">
-                  <h3 className="font-medium truncate">{post.titleEn}</h3>
-                  <div className="flex items-center gap-3 text-sm text-muted-foreground">
-                    <span>{post.category}</span>
-                    <span>{post.date}</span>
-                    <span className={`px-2 py-0.5 rounded-full text-xs ${
-                      post.published ? 'bg-green-100 text-green-700' : 'bg-yellow-100 text-yellow-700'
-                    }`}>
-                      {post.published ? 'Published' : 'Draft'}
-                    </span>
+              <div key={post.id} className="p-4 flex items-center justify-between hover:bg-gray-50">
+                <div className="flex items-center gap-4">
+                  {post.image && <img src={post.image} className="w-16 h-12 object-cover rounded" alt="" />}
+                  <div>
+                    <h3 className="font-semibold">{post.titleGe || post.titleEn}</h3>
+                    <p className="text-sm text-gray-500">{post.date} • {post.category}</p>
                   </div>
                 </div>
-                <div className="flex items-center gap-2">
-                  <Button variant="ghost" size="icon" asChild>
-                    <Link href={`/blog/${post.slug}`} target="_blank">
-                      <Eye className="w-4 h-4" />
-                    </Link>
-                  </Button>
-                  <Button variant="ghost" size="icon" onClick={() => handleEdit(post)}>
-                    <Edit className="w-4 h-4" />
-                  </Button>
-                  <Button 
-                    variant="ghost" 
-                    size="icon" 
-                    className="text-destructive hover:text-destructive"
-                    onClick={() => handleDelete(post.id)}
-                  >
-                    <Trash2 className="w-4 h-4" />
-                  </Button>
+                <div className="flex gap-2">
+                  <button onClick={() => handleEdit(post)} className="p-2 text-blue-600 hover:bg-blue-50 rounded"><Edit className="w-5 h-5"/></button>
+                  <button onClick={() => handleDelete(post.id)} className="p-2 text-red-600 hover:bg-red-50 rounded"><Trash2 className="w-5 h-5"/></button>
                 </div>
               </div>
             ))}
           </div>
         </div>
-
-        <p className="text-center text-sm text-muted-foreground mt-8">
-          Note: This is a demo admin panel. In production, integrate with a database like Supabase for persistent storage.
-        </p>
       </div>
     </div>
   )
